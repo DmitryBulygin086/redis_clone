@@ -222,14 +222,12 @@ int main(int argc, char **argv) {
     }
     int32_t err = send_req(fd, cmd);
     if (err) {
-        goto L_DONE;
+        close(fd);
+        return 0;
     }
     err = read_res(fd);
     if (err) {
-        goto L_DONE;
+        close(fd);
+        return 0;
     }
-
-L_DONE:
-    close(fd);
-    return 0;
 }

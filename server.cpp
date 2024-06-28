@@ -21,6 +21,7 @@
 #include "heap.h"
 #include "thread_pool.h"
 #include "common.h"
+#include "server.h"
 
 
 /**
@@ -184,6 +185,25 @@ static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn) {
     fd2conn[conn->fd] = conn;
 }
 
+/**
+ * @brief Accepts a new connection and sets it to non-blocking mode.
+ *
+ * This function accepts a new connection on the given file descriptor, sets the new connection file descriptor to non-blocking mode,
+ * and creates a new Conn structure to store the connection information.
+ *
+ * @param fd The file descriptor on which to accept the new connection.
+ *
+ * @return 0 on success, -1 on error.
+ *
+ * @note This function assumes that the file descriptor is already listening for incoming connections.
+ *       It does not handle any errors or exceptions.
+ *
+ * @note The function uses the accept() system call to accept the new connection, and the fd_set_nb() function to set the new connection file descriptor to non-blocking mode.
+ *       It also creates a new Conn structure to store the connection information and initializes its fields.
+ *
+ * @note The function does not handle any concurrent access to the global data structures.
+ *       It assumes that the global data structures are not modified while this function is executing.
+ */
 static int32_t accept_new_conn(int fd) {
     // accept
     struct sockaddr_in client_addr = {};
@@ -281,6 +301,17 @@ struct Entry {
     size_t heap_idx = -1;
 };
 
+/**
+ * @brief Checks if two hash table nodes represent the same entry.
+ *
+ * This function compares the keys of two hash table nodes to determine if they represent the same entry.
+ * It assumes that the keys are stored in the 'key' member of the 'Entry' structure.
+ *
+ * @param lhs A pointer to the first hash table node.
+ * @param rhs A pointer to the second hash table node.
+ *
+ * @return True if the keys of the two nodes are equal, false otherwise.
+ */
 static bool entry_eq(HNode *lhs, HNode *rhs) {
     struct Entry *le = container_of(lhs, struct Entry, node);
     struct Entry *re = container_of(rhs, struct Entry, node);
@@ -357,6 +388,30 @@ static void end_arr(std::string &out, void *ctx, uint32_t n) {
     memcpy(&out[pos], &n, 4);
 }
 
+/**
+ * @brief Retrieves the value associated with a given key from the database.
+ *
+ * This function looks up the key in the database and returns the corresponding value.
+ * If the key is not found in the database, it returns a nil reply.
+ * If the key is found but its type is not a string, it returns an error reply indicating the expected type.
+ *
+ * @param cmd A vector of strings representing the command.
+ *            The first element of the vector should be "get".
+ *            The second element of the vector should be the key.
+ * @param out A string reference to store the response.
+ *            The response is formatted as a Redis protocol reply.
+ *
+ * @return void
+ *
+ * @note The function assumes that the command is well-formed and the database is in a valid state.
+ *       It does not handle any errors or exceptions.
+ *
+ * @note The function uses the str_hash() function to calculate the hash code of the key.
+ *       It also uses the hm_lookup() function to look up the key in the database.
+ *
+ * @note The function does not handle any concurrent access to the database.
+ *       It assumes that the database is not modified while this function is executing.
+ */
 static void do_get(std::vector<std::string> &cmd, std::string &out) {
     Entry key;
     key.key.swap(cmd[1]);
@@ -374,6 +429,28 @@ static void do_get(std::vector<std::string> &cmd, std::string &out) {
     return out_str(out, ent->val);
 }
 
+/**
+ * @brief Sets the value of a key in the database.
+ *
+ * This function takes a vector of strings representing the command and a string reference to store the response.
+ * It extracts the key and the value from the command, looks up the key in the database, and sets the value for the key.
+ * If the key is found in the database and its type is not a string, it returns an error response.
+ * If the key is not found in the database, a new entry is created with the given key and value.
+ *
+ * @param cmd A vector of strings representing the command.
+ *            The first element of the vector should be "set", and the second element should be the key.
+ *            The third element should be the value.
+ * @param out A string reference to store the response.
+ *            The response is formatted as a Redis status reply.
+ *
+ * @return void
+ *
+ * @note The function assumes that the command is well-formed and the database is in a valid state.
+ *       It does not handle any errors or exceptions.
+ *
+ * @note The function uses the str_hash() function to calculate the hash code of the key.
+ *       It also uses the hm_lookup() and hm_insert() functions to perform the key lookup and insertion in the hash table.
+ */
 static void do_set(std::vector<std::string> &cmd, std::string &out) {
     Entry key;
     key.key.swap(cmd[1]);
@@ -397,6 +474,19 @@ static void do_set(std::vector<std::string> &cmd, std::string &out) {
 }
 
 // set or remove the TTL
+/**
+ * @brief Sets the expiration time for an entry in the database.
+ *
+ * This function updates the expiration time for a given entry in the database.
+ * If the TTL is negative and the entry is already in the heap, it removes the entry from the heap.
+ * If the TTL is non-negative, it adds or updates the entry in the heap.
+ *
+ * @param ent The entry for which the expiration time needs to be set.
+ * @param ttl_ms The TTL in milliseconds. If negative, the entry will be removed from the heap.
+ *
+ * @note This function assumes that the heap is already initialized and the entry is already in the hash table.
+ * @note This function does not handle any errors or exceptions.
+ */
 static void entry_set_ttl(Entry *ent, int64_t ttl_ms) {
     if (ttl_ms < 0 && ent->heap_idx != (size_t)-1) {
         // erase an item from the heap
@@ -555,6 +645,25 @@ static void entry_del(Entry *ent) {
     }
 }
 
+/**
+ * @brief Processes the "del" command and generates a response.
+ *
+ * This function takes a vector of strings representing the command and a string reference to store the response.
+ * It removes the specified key from the database and generates a response indicating whether the operation was successful.
+ *
+ * @param cmd A vector of strings representing the command.
+ *            The first element of the vector should be "del", and the second element should be the key to be deleted.
+ * @param out A string reference to store the response.
+ *            The response is formatted as a Redis integer reply, indicating whether the operation was successful (1) or not (0).
+ *
+ * @return void
+ *
+ * @note This function assumes that the command is well-formed and the key exists in the database.
+ *       It does not handle the case where the key does not exist or the command is malformed.
+ *
+ * @note This function does not handle any errors or exceptions.
+ *       It assumes that the command is valid and the database is in a valid state.
+ */
 static void do_del(std::vector<std::string> &cmd, std::string &out) {
     Entry key;
     key.key.swap(cmd[1]);
@@ -980,6 +1089,26 @@ static void state_req(Conn *conn) {
     while (try_fill_buffer(conn)) {}
 }
 
+/**
+ * @brief Tries to flush the write buffer of a connection.
+ *
+ * This function attempts to write data from the connection's write buffer to the client's socket.
+ * It continues to write data until either the buffer is empty, an error occurs, or the client closes the connection.
+ *
+ * @param conn The connection for which the write buffer is to be flushed.
+ *
+ * @return True if the connection is still in the response state and there is more data to be written.
+ *         False if the connection is no longer in the response state or there is no more data to be written.
+ *
+ * @note This function uses a loop to continuously try to write data until no more data can be written.
+ *       This is done to handle the case where the buffer is not large enough to hold all the data that is available.
+ *
+ * @note The function also handles the case where the write operation is interrupted by a signal,
+ *       and it continues to try to write data until it succeeds or encounters an error.
+ *
+ * @note The function does not handle the case where the connection is in the request state.
+ *       It only handles the case where the connection is in the response state.
+ */
 static bool try_flush_buffer(Conn *conn) {
     ssize_t rv = 0;
     do {
@@ -1113,6 +1242,15 @@ static bool hnode_same(HNode *lhs, HNode *rhs) {
     return lhs == rhs;
 }
 
+/**
+ * @brief Function to handle the timers in the server.
+ *
+ * This function processes both idle timers and TTL timers.
+ * It checks each timer and performs the necessary actions when the timer expires.
+ *
+ * @note The function uses a while loop to process all timers that are ready.
+ * @note The function also includes a limit on the number of TTL timer works to prevent the server from being stalled.
+ */
 static void process_timers() {
     // the extra 1000us is for the ms resolution of poll()
     uint64_t now_us = get_monotonic_usec() + 1000;
